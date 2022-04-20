@@ -15,12 +15,14 @@
   <build_depend>ur_controller_msgs</build_depend>
   <build_depend>simple_robot_simulator_msgs</build_depend>
   <build_depend>ur_script_msgs</build_depend>
+  <build_depend>scene_manipulation_msgs</build_depend>
 
   <exec_depend>rcl</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>ur_controller_msgs</exec_depend>
   <exec_depend>simple_robot_simulator_msgs</exec_depend>
   <exec_depend>ur_script_msgs</exec_depend>
+  <exec_depend>scene_manipulation_msgs</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
