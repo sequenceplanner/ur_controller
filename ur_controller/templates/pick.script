@@ -1,26 +1,29 @@
 def pick():
   set_target_payload(0.710,[0.006,-0.023,0.062],[0.0,0.0,0.0,0.0,0.0,0.0])
-  move_done = False
-  force_done = False
-  thread move_thread():
-    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, 0.5, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
-    move_done = True
+  move_down_done = False
+  force_down_done = False
+  move_up_done = False
+  force_up_done = False
+  thread move_thread_down():
+    set_tcp({{ tcp_in_faceplate }})
+    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, -0.5, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+    move_down_done = True
   end
-  thread force_thread():
+  thread force_thread_down():
     while True:
     forces = get_tcp_force()
       if forces[0] > 20.0 or forces[1] > 20.0 or forces[2] > 20.0 or forces[0] < -20.0 or forces[1] < -20.0 or forces[2] < -20.0:
         set_tool_digital_out(1, True)
-        force_done = True
+        force_down_done = True
         break
       end
     sleep(0.002)
     end
   end
-  t1 = run move_thread()
-  t2 = run force_thread()
+  t1 = run move_thread_down()
+  t2 = run force_thread_down()
   while True:
-    if move_done or force_done:
+    if move_down_done or force_down_done:
       break
     end
     sleep(0.002)
@@ -29,6 +32,35 @@ def pick():
   kill t2
   stopj(5.0)
   sleep(0.5)
-  movel(pose_trans(get_forward_kin(), p[0.0, 0.0, -0.1, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+  thread move_thread_up():
+    set_tcp({{ tcp_in_faceplate }})
+    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, 0.1, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+    move_up_done = True
+  end
+  thread force_thread_up():
+    sleep(0.4)
+    while True:
+    forces = get_tcp_force()
+      if forces[0] > 20.0 or forces[1] > 20.0 or forces[2] > 20.0 or forces[0] < -20.0 or forces[1] < -20.0 or forces[2] < -20.0:
+        set_tool_digital_out(1, False)
+        force_up_done = True
+        break
+      end
+    sleep(0.002)
+    end
+  end
+  t3 = run move_thread_up()
+  t4 = run force_thread_up()
+  while True:
+    if move_up_done or force_up_done:
+      break
+    end
+    sleep(0.002)
+  end
+  kill t3
+  kill t4
+  if force_up_done:
+    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, 0.1, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+  end
 end
 pick()
