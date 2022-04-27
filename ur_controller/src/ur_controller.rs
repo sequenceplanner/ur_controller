@@ -222,8 +222,8 @@ async fn urscript_controller_server(
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
                 match execute_urscript(g_clone, &urc_client, &tf_lookup_client, &templates).await {
-                    Ok(()) => {
-                        g.succeed(URControl::Result { success: true })
+                    Ok(ok) => {
+                        g.succeed(URControl::Result { success: ok })
                             .expect("Could not send result.");
                         continue;
                     }
@@ -315,10 +315,10 @@ async fn execute_urscript(
     urc_client: &r2r::ActionClient<ExecuteScript::Action>,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
     templates: &tera::Tera,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let goal = match generate_script(g.goal.clone(), &tf_lookup_client, &templates).await {
         Some(script) => ExecuteScript::Goal { script },
-        None => return Ok(()), // RETURN ERROR SOMEHOW: Err(std::error::Error::default())
+        None => return Ok(false), // RETURN ERROR SOMEHOW: Err(std::error::Error::default())
     };
 
     r2r::log_info!(NODE_ID, "Sending request to UR Script Driver.");
@@ -347,14 +347,14 @@ async fn execute_urscript(
                 let _ = g.publish_feedback(URControl::Feedback {
                     current_state: "Goal succesfully aborted.".into(),
                 });
-                Ok(())
+                Ok(false)
             }
             _ => {
-                r2r::log_info!(NODE_ID, "Executing the UR Script succeeded.");
+                r2r::log_info!(NODE_ID, "Executing the UR Script succeeded? {}", msg.ok);
                 let _ = g.publish_feedback(URControl::Feedback {
                     current_state: "Executing the UR Script succeeded.".into(),
                 });
-                Ok(())
+                Ok(msg.ok)
             }
         },
         Err(e) => {
