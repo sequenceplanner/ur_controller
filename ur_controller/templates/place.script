@@ -3,7 +3,8 @@ def place():
   move_done = False
   force_done = False
   thread move_thread():
-    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, 0.5, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+    set_tcp({{ tcp_in_faceplate }})
+    movel(pose_trans(get_forward_kin(), p[0.0, 0.0, -0.5, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
     move_done = True
   end
   thread force_thread():
@@ -29,6 +30,6 @@ def place():
   kill t2
   stopj(5.0)
   sleep(0.5)
-  movel(pose_trans(get_forward_kin(), p[0.0, 0.0, -0.1, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
+  movel(pose_trans(get_forward_kin(), p[0.0, 0.0, 0.1, 0.0, 0.0, 0.0]),a=0.1,v=0.05)
 end
 place()
