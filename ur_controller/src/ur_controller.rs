@@ -45,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let params = node.params.clone();
     let params_things = params.lock().unwrap(); // OK to panic
     let simple_param = params_things.get("simple_robot_simulator");
+    let prefix_param = params_things.get("prefix");
 
     let simple = match simple_param {
         Some(p) => match p {
@@ -66,6 +67,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let prefix = match prefix_param {
+        Some(p) => match p {
+            ParameterValue::String(value) => value.clone(),
+            _ => "".to_string()
+        }
+        None => "".to_string()
+    };
+
     let action = node.create_action_server::<URControl::Action>("ur_control")?;
 
     match simple {
@@ -83,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             r2r::log_info!(NODE_ID, "Simple Robot Simulator available.");
 
             tokio::task::spawn(async move {
-                let result = simple_controller_server(action, simple_robot_simulator_client).await;
+                let result = simple_controller_server(action, simple_robot_simulator_client, &prefix).await;
                 match result {
                     Ok(()) => r2r::log_info!(NODE_ID, "Simple Controller Service call succeeded."),
                     Err(e) => r2r::log_error!(
@@ -185,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn simple_controller_server(
     mut requests: impl Stream<Item = r2r::ActionServerGoalRequest<URControl::Action>> + Unpin,
     srs_client: r2r::ActionClient<SimpleRobotControl::Action>,
+    prefix: &str
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match requests.next().await {
@@ -192,7 +202,7 @@ async fn simple_controller_server(
                 let (mut g, mut _cancel) =
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
-                match execute_simple_simulation(g_clone, &srs_client).await {
+                match execute_simple_simulation(g_clone, &srs_client, prefix).await {
                     Ok(()) => {
                         g.succeed(URControl::Result { success: true })
                             .expect("Could not send result.");
@@ -238,10 +248,10 @@ async fn urscript_controller_server(
     }
 }
 
-fn urc_goal_to_srs_goal(urc_goal: URControl::Goal) -> SimpleRobotControl::Goal {
+fn urc_goal_to_srs_goal(urc_goal: URControl::Goal, prefix: &str) -> SimpleRobotControl::Goal {
     SimpleRobotControl::Goal {
-        base_frame_id: BASEFRAME_ID.to_string(),
-        face_plate_id: FACEPLATE_ID.to_string(),
+        base_frame_id: format!("{}{}", prefix, BASEFRAME_ID.to_string()), // BASEFRAME_ID.to_string()
+        face_plate_id: format!("{}{}", prefix, FACEPLATE_ID.to_string()), // FACEPLATE_ID.to_string(),
         tcp_id: urc_goal.tcp_id,
         goal_feature_id: urc_goal.goal_feature_id,
         acceleration: urc_goal.acceleration,
@@ -254,8 +264,9 @@ fn urc_goal_to_srs_goal(urc_goal: URControl::Goal) -> SimpleRobotControl::Goal {
 async fn execute_simple_simulation(
     g: ActionServerGoal<URControl::Action>,
     srs_client: &r2r::ActionClient<SimpleRobotControl::Action>,
+    prefix: &str
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let goal = urc_goal_to_srs_goal(g.goal.clone());
+    let goal = urc_goal_to_srs_goal(g.goal.clone(), prefix);
 
     r2r::log_info!(NODE_ID, "Sending request to Simple Robot Simulator.");
     let _ = g.publish_feedback(URControl::Feedback {
