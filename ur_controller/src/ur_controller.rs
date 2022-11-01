@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tera;
 
 pub static NODE_ID: &'static str = "ur_controller";
-pub static BASEFRAME_ID: &'static str = "base";
+pub static BASEFRAME_ID: &'static str = "base_link";
 pub static FACEPLATE_ID: &'static str = "tool0";
 
 #[derive(Serialize, Deserialize)]
