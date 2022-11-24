@@ -6,7 +6,6 @@ use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::ur_controller_msgs::action::URControl;
 use r2r::ur_controller_msgs::msg::Payload;
-use r2r::ur_controller_msgs::srv::GenerateURScript;
 use r2r::ur_script_msgs::action::ExecuteScript;
 use r2r::ActionServerGoal;
 use r2r::ParameterValue;
@@ -14,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tera;
 
 pub static NODE_ID: &'static str = "ur_controller";
-pub static BASEFRAME_ID: &'static str = "base_link";
+pub static BASEFRAME_ID: &'static str = "base"; // base_link if simulation
 pub static FACEPLATE_ID: &'static str = "tool0";
 
 #[derive(Serialize, Deserialize)]
