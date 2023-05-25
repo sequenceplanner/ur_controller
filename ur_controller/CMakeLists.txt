@@ -24,7 +24,7 @@ r2r_cargo(std_msgs               # just to test that it works
 
 # install binaries
 install(PROGRAMS
-  ${CMAKE_SOURCE_DIR}/target/release/ur_controller
+  ${CMAKE_SOURCE_DIR}/target/colcon/ur_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 

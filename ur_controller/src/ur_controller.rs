@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tera;
 
 pub static NODE_ID: &'static str = "ur_controller";
-pub static BASEFRAME_ID: &'static str = "base"; // base_link if simulation
+pub static BASEFRAME_ID: &'static str = "base_link"; // base_link if simulation, base if real or ursim
 pub static FACEPLATE_ID: &'static str = "tool0";
 
 #[derive(Serialize, Deserialize)]
