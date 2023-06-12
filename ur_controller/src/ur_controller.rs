@@ -202,15 +202,8 @@ async fn simple_controller_server(
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
                 match execute_simple_simulation(g_clone, &srs_client, prefix).await {
-                    Ok(()) => {
-                        g.succeed(URControl::Result { success: true })
-                            .expect("Could not send result.");
-                        continue;
-                    }
-                    Err(e) => {
-                        let _ = g.abort(URControl::Result { success: false });
-                        continue;
-                    }
+                    Ok(result) => g.succeed(URControl::Result { success: result }).expect("Could not send result."),
+                    Err(_) => g.abort(URControl::Result { success: false }).expect("Could not abort."),
                 }
             }
             None => (),
@@ -231,15 +224,8 @@ async fn urscript_controller_server(
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
                 match execute_urscript(g_clone, &urc_client, &tf_lookup_client, &templates).await {
-                    Ok(ok) => {
-                        g.succeed(URControl::Result { success: ok })
-                            .expect("Could not send result.");
-                        continue;
-                    }
-                    Err(e) => {
-                        let _ = g.abort(URControl::Result { success: false });
-                        continue;
-                    }
+                    Ok(ok) => g.succeed(URControl::Result { success: ok }).expect("Could not send result."),
+                    Err(_) => g.abort(URControl::Result { success: false }).expect("Could not abort."),
                 }
             }
             None => (),
@@ -264,7 +250,7 @@ async fn execute_simple_simulation(
     g: ActionServerGoal<URControl::Action>,
     srs_client: &r2r::ActionClient<SimpleRobotControl::Action>,
     prefix: &str
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let goal = urc_goal_to_srs_goal(g.goal.clone(), prefix);
 
     r2r::log_info!(NODE_ID, "Sending request to Simple Robot Simulator.");
@@ -272,7 +258,7 @@ async fn execute_simple_simulation(
         current_state: "Sending request to Simple Robot Simulator.".into(),
     });
 
-    let (_goal, result, _feedback) = match srs_client.send_goal_request(goal) {
+    let (_goal, result, mut feedback) = match srs_client.send_goal_request(goal) {
         Ok(x) => match x.await {
             Ok(y) => y,
             Err(e) => {
@@ -286,24 +272,37 @@ async fn execute_simple_simulation(
         }
     };
 
+    // spawn task for propagating the feedback
+    let g_clone = g.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Some(fb) = feedback.next().await {
+                let passed_on = URControl::Feedback {
+                    current_state: fb.current_state,
+                };
+                if let Err(_) = g_clone.publish_feedback(passed_on) {
+                    // could not publish, probably done...
+                    break;
+                }
+            } else {
+                // sender dropped, we are done.
+                break;
+            }
+        }
+    });
+
     match result.await {
         Ok((status, msg)) => match status {
             r2r::GoalStatus::Aborted => {
                 r2r::log_info!(NODE_ID, "Goal succesfully aborted with: {:?}", msg);
-                let _ = g.publish_feedback(URControl::Feedback {
-                    current_state: "Goal succesfully aborted.".into(),
-                });
-                Ok(())
+                Ok(msg.success)
             }
             _ => {
                 r2r::log_info!(
                     NODE_ID,
                     "Executing the Simple Robot Simulator action succeeded."
                 );
-                let _ = g.publish_feedback(URControl::Feedback {
-                    current_state: "Executing the Simple Robot Simulator action succeeded.".into(),
-                });
-                Ok(())
+                Ok(msg.success)
             }
         },
         Err(e) => {
@@ -312,9 +311,6 @@ async fn execute_simple_simulation(
                 "Simple Robot Simulator action failed with: {:?}",
                 e,
             );
-            let _ = g.publish_feedback(URControl::Feedback {
-                current_state: "Simple Robot Simulator action failed. Aborting.".into(),
-            });
             return Err(Box::new(e));
         }
     }
@@ -336,7 +332,7 @@ async fn execute_urscript(
         current_state: "Sending request to UR Script Driver.".into(),
     });
 
-    let (_goal, result, _feedback) = match urc_client.send_goal_request(goal) {
+    let (_goal, result, mut feedback) = match urc_client.send_goal_request(goal) {
         Ok(x) => match x.await {
             Ok(y) => y,
             Err(e) => {
@@ -350,28 +346,38 @@ async fn execute_urscript(
         }
     };
 
+    // spawn task for propagating the feedback
+    let g_clone = g.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Some(fb) = feedback.next().await {
+                let passed_on = URControl::Feedback {
+                    current_state: fb.feedback,
+                };
+                if let Err(_) = g_clone.publish_feedback(passed_on) {
+                    // could not publish, probably done...
+                    break;
+                }
+            } else {
+                // sender dropped, we are done.
+                break;
+            }
+        }
+    });
+
     match result.await {
         Ok((status, msg)) => match status {
             r2r::GoalStatus::Aborted => {
                 r2r::log_info!(NODE_ID, "Goal succesfully aborted with: {:?}", msg);
-                let _ = g.publish_feedback(URControl::Feedback {
-                    current_state: "Goal succesfully aborted.".into(),
-                });
                 Ok(false)
             }
             _ => {
                 r2r::log_info!(NODE_ID, "Executing the UR Script succeeded? {}", msg.ok);
-                let _ = g.publish_feedback(URControl::Feedback {
-                    current_state: "Executing the UR Script succeeded.".into(),
-                });
                 Ok(msg.ok)
             }
         },
         Err(e) => {
             r2r::log_error!(NODE_ID, "UR Script Driver Action failed with: {:?}", e,);
-            let _ = g.publish_feedback(URControl::Feedback {
-                current_state: "UR Script Driver Action failed. Aborting.".into(),
-            });
             return Err(Box::new(e));
         }
     }
