@@ -12,10 +12,17 @@ def script():
     {%- if use_blend_radius -%}
     , r={{ blend_radius }}
     {%- endif -%})
-  {%- else -%}
-    if get_inverse_kin_has_solution({{ target_in_base }}):
+  {% else -%}
+    if get_inverse_kin_has_solution({{ target_in_base }}
+    {%- if use_preferred_joint_config -%}
+    , qnear={{ preferred_joint_config }}
+    {%- endif -%}):
       socket_send_line("Solution found, start movej.", "ur_driver_socket")
-      movej(get_inverse_kin({{ target_in_base }}), a={{ acceleration }}, v={{ velocity }}
+      movej(get_inverse_kin({{ target_in_base }}
+        {%- if use_preferred_joint_config -%}
+        , qnear={{ preferred_joint_config }}
+        {%- endif -%})
+      , a={{ acceleration }}, v={{ velocity }}
       {%- if use_execution_time -%}
       , t={{ execution_time }}
       {%- endif -%}
@@ -29,4 +36,3 @@ def script():
     end
   {%- endif %}
 end
-script()

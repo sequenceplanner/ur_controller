@@ -2,7 +2,7 @@ use futures::stream::Stream;
 use futures::StreamExt;
 use futures::future::{self, Either};
 use r2r::geometry_msgs::msg::TransformStamped;
-use r2r::scene_manipulation_msgs::srv::LookupTransform;
+use r2r::scene_manipulation_msgs::srv::{LookupTransform, GetExtra};
 use r2r::sensor_msgs::msg::JointState;
 use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::ur_controller_msgs::action::URControl;
@@ -11,6 +11,7 @@ use r2r::ur_script_msgs::action::ExecuteScript;
 use r2r::ActionServerGoal;
 use r2r::ParameterValue;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use tera;
 
 pub static NODE_ID: &'static str = "ur_controller";
@@ -159,6 +160,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 node.create_client::<LookupTransform::Service>("lookup_transform")?;
             let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
 
+            let get_extra_client =
+                node.create_client::<GetExtra::Service>("get_extra")?;
+            let waiting_for_extra_server = node.is_available(&get_extra_client)?;
+
             let handle = std::thread::spawn(move || loop {
                 node.spin_once(std::time::Duration::from_millis(100));
             });
@@ -171,9 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             waiting_for_tf_lookup_server.await?;
             r2r::log_info!(NODE_ID, "tf Lookup Service available.");
 
+            r2r::log_warn!(NODE_ID, "Waiting for extra service...");
+            waiting_for_extra_server.await?;
+            r2r::log_info!(NODE_ID, "extra Service available.");
+
             tokio::task::spawn(async move {
                 let result =
-                    urscript_controller_server(action, &urc_client, &tf_lookup_client, &templates)
+                    urscript_controller_server(action, &urc_client, &tf_lookup_client,
+                                               &get_extra_client, &templates)
                         .await;
                 match result {
                     Ok(()) => r2r::log_info!(NODE_ID, "URScript Driver Service call succeeded."),
@@ -217,6 +227,7 @@ async fn urscript_controller_server(
     mut requests: impl Stream<Item = r2r::ActionServerGoalRequest<URControl::Action>> + Unpin,
     urc_client: &r2r::ActionClient<ExecuteScript::Action>,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
+    get_extra_client: &r2r::Client<GetExtra::Service>,
     templates: &tera::Tera,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
@@ -225,7 +236,9 @@ async fn urscript_controller_server(
                 let (mut g, cancel) =
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
-                match execute_urscript(g_clone, cancel, &urc_client, &tf_lookup_client, &templates).await {
+                match execute_urscript(g_clone, cancel, urc_client,
+                                       tf_lookup_client, get_extra_client,
+                                       templates).await {
                     Ok(ActionResult::Bool(ok)) => {
                         if let Err(e) = g.succeed(URControl::Result { success: ok }) {
                             r2r::log_info!(NODE_ID, "Could not send result, goal might be cancelled: {}", e);
@@ -339,9 +352,10 @@ async fn execute_urscript(
     mut cancel: impl Stream<Item = r2r::ActionServerCancelRequest> + Unpin,
     urc_client: &r2r::ActionClient<ExecuteScript::Action>,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
+    get_extra_client: &r2r::Client<GetExtra::Service>,
     templates: &tera::Tera,
 ) -> Result<ActionResult, Box<dyn std::error::Error>> {
-    let goal = match generate_script(g.goal.clone(), &tf_lookup_client, &templates).await {
+    let goal = match generate_script(g.goal.clone(), tf_lookup_client, get_extra_client, templates).await {
         Some(script) => ExecuteScript::Goal { script },
         None => return Ok(ActionResult::Bool(false)), // RETURN ERROR SOMEHOW: Err(std::error::Error::default())
     };
@@ -427,10 +441,11 @@ async fn execute_urscript(
 async fn generate_script(
     message: URControl::Goal,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
+    get_extra_client: &r2r::Client<GetExtra::Service>,
     templates: &tera::Tera,
 ) -> Option<String> {
     let empty_context = tera::Context::new();
-    let interpreted_message = interpret_message(&message, &tf_lookup_client).await;
+    let interpreted_message = interpret_message(&message, tf_lookup_client, get_extra_client).await;
     match templates.render(
         &format!("{}.script", message.command),
         match &tera::Context::from_serialize(interpreted_message) {
@@ -462,11 +477,45 @@ async fn generate_script(
 async fn interpret_message(
     message: &URControl::Goal,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
+    get_extra_client: &r2r::Client<GetExtra::Service>,
 ) -> Option<Interpretation> {
+    let mut pfjs = None;
     let target_in_base = match message.use_joint_positions && message.command == "move_j" {
         true => pose_to_string(&TransformStamped::default()),
         false => match lookup_tf(BASEFRAME_ID, &message.goal_feature_id, tf_lookup_client).await {
-            Some(transform) => pose_to_string(&transform),
+            Some(transform) => {
+                // found transform, check if there is a preferred joint state
+                let req = GetExtra::Request { frame_id: message.goal_feature_id.clone() };
+                match get_extra_client.request(&req).expect("could not").await {
+                    Ok(msg) => {
+                        if msg.success {
+                            match serde_json::from_str::<serde_json::Value>(&msg.extra) {
+                                Ok(json_val) => {
+                                    if let Some(jo) = json_val.get("preferred_joint_configuration") {
+                                        let pf: Option<Vec<f32>> = serde_json::from_value(jo.clone()).ok();
+                                        if let Some(pf) = pf {
+                                            println!("There is a pref joint state: {:?}", pf);
+                                            pfjs = Some(pf);
+                                        }
+                                    }
+                                    pose_to_string(&transform)
+                                }
+                                Err(e) => {
+                                    println!("Could not parse extra data for frame {}: {}", req.frame_id, e);
+                                    return None;
+                                }
+                            }
+                        } else {
+                            println!("Failed to lookup extra data for frame {}: {}", req.frame_id, msg.extra);
+                            return None;
+                        }
+                    }
+                    Err(e) => {
+                        println!("Failed to lookup extra data for frame {}: {}", req.frame_id, e);
+                        return None
+                    },
+                }
+            },
             None => return None,
         },
     };
@@ -479,6 +528,10 @@ async fn interpret_message(
         },
     };
 
+    // TODO: make use of "use_preferred_joint_config"
+    let use_preferred_joint_config = pfjs.is_some();
+    // let use_preferred_joint_config = message.use_preferred_joint_config && pfjs.is_some();
+    let preferred_joint_config = joint_vector_to_string(&pfjs.unwrap_or(vec![]));
     Some(Interpretation {
         command: message.command.to_string(),
         acceleration: message.acceleration,
@@ -489,8 +542,8 @@ async fn interpret_message(
         blend_radius: message.blend_radius,
         use_joint_positions: message.use_joint_positions,
         joint_positions: joint_pose_to_string(message.joint_positions.clone()),
-        use_preferred_joint_config: message.use_preferred_joint_config,
-        preferred_joint_config: joint_pose_to_string(message.preferred_joint_config.clone()),
+        use_preferred_joint_config,
+        preferred_joint_config,
         use_payload: message.use_payload,
         payload: payload_to_string(message.payload.clone()),
         target_in_base,
@@ -516,6 +569,13 @@ fn joint_pose_to_string(j: JointState) -> String {
             j.position[4],
             j.position[5]
         ),
+        false => "".to_string(),
+    }
+}
+
+fn joint_vector_to_string(j: &[f32]) -> String {
+    match j.len() == 6 {
+        true => format!("[{},{},{},{},{},{}]", j[0], j[1], j[2], j[3], j[4], j[5]),
         false => "".to_string(),
     }
 }

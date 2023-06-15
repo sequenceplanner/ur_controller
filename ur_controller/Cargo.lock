@@ -1195,6 +1195,7 @@ dependencies = [
  "futures",
  "r2r",
  "serde",
+ "serde_json",
  "tera",
  "tokio",
 ]
