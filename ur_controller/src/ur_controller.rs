@@ -1,5 +1,6 @@
 use futures::stream::Stream;
 use futures::StreamExt;
+use futures::future::{self, Either};
 use r2r::geometry_msgs::msg::TransformStamped;
 use r2r::scene_manipulation_msgs::srv::LookupTransform;
 use r2r::sensor_msgs::msg::JointState;
@@ -13,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use tera;
 
 pub static NODE_ID: &'static str = "ur_controller";
-pub static BASEFRAME_ID: &'static str = "base_link"; // base_link if simulation, base if real or ursim
+// pub static BASEFRAME_ID: &'static str = "base_link"; // base_link if simulation, base if real or ursim
+pub static BASEFRAME_ID: &'static str = "base"; // base_link if simulation, base if real or ursim
 pub static FACEPLATE_ID: &'static str = "tool0";
 
 #[derive(Serialize, Deserialize)]
@@ -220,12 +222,23 @@ async fn urscript_controller_server(
     loop {
         match requests.next().await {
             Some(request) => {
-                let (mut g, mut _cancel) =
+                let (mut g, cancel) =
                     request.accept().expect("Could not accept goal request.");
                 let g_clone = g.clone();
-                match execute_urscript(g_clone, &urc_client, &tf_lookup_client, &templates).await {
-                    Ok(ok) => g.succeed(URControl::Result { success: ok }).expect("Could not send result."),
-                    Err(_) => g.abort(URControl::Result { success: false }).expect("Could not abort."),
+                match execute_urscript(g_clone, cancel, &urc_client, &tf_lookup_client, &templates).await {
+                    Ok(ActionResult::Bool(ok)) => {
+                        if let Err(e) = g.succeed(URControl::Result { success: ok }) {
+                            r2r::log_info!(NODE_ID, "Could not send result, goal might be cancelled: {}", e);
+                        }
+                    },
+                    Ok(ActionResult::Canceled) => {
+                        if let Err(e) = g.cancel(URControl::Result { success: false }) {
+                            r2r::log_info!(NODE_ID, "Could not send cancel result, goal might be cancelled: {}", e);
+                        }
+                    }
+                    Err(_) => if let Err(e) = g.abort(URControl::Result { success: false }) {
+                        r2r::log_info!(NODE_ID, "Could not send abort result, goal might be cancelled: {}", e);
+                    }
                 }
             }
             None => (),
@@ -316,15 +329,21 @@ async fn execute_simple_simulation(
     }
 }
 
+enum ActionResult {
+    Bool(bool),
+    Canceled
+}
+
 async fn execute_urscript(
     g: ActionServerGoal<URControl::Action>,
+    mut cancel: impl Stream<Item = r2r::ActionServerCancelRequest> + Unpin,
     urc_client: &r2r::ActionClient<ExecuteScript::Action>,
     tf_lookup_client: &r2r::Client<LookupTransform::Service>,
     templates: &tera::Tera,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<ActionResult, Box<dyn std::error::Error>> {
     let goal = match generate_script(g.goal.clone(), &tf_lookup_client, &templates).await {
         Some(script) => ExecuteScript::Goal { script },
-        None => return Ok(false), // RETURN ERROR SOMEHOW: Err(std::error::Error::default())
+        None => return Ok(ActionResult::Bool(false)), // RETURN ERROR SOMEHOW: Err(std::error::Error::default())
     };
 
     r2r::log_info!(NODE_ID, "Sending request to UR Script Driver.");
@@ -332,7 +351,7 @@ async fn execute_urscript(
         current_state: "Sending request to UR Script Driver.".into(),
     });
 
-    let (_goal, result, mut feedback) = match urc_client.send_goal_request(goal) {
+    let (goal_handle, result, mut feedback) = match urc_client.send_goal_request(goal) {
         Ok(x) => match x.await {
             Ok(y) => y,
             Err(e) => {
@@ -365,20 +384,42 @@ async fn execute_urscript(
         }
     });
 
-    match result.await {
-        Ok((status, msg)) => match status {
-            r2r::GoalStatus::Aborted => {
-                r2r::log_info!(NODE_ID, "Goal succesfully aborted with: {:?}", msg);
-                Ok(false)
-            }
-            _ => {
-                r2r::log_info!(NODE_ID, "Executing the UR Script succeeded? {}", msg.ok);
-                Ok(msg.ok)
+    match future::select(result, cancel.next()).await {
+        Either::Left((res, _cancel_stream)) => {
+            match res {
+                Ok((status, msg)) => match status {
+                    r2r::GoalStatus::Aborted => {
+                        r2r::log_info!(NODE_ID, "Goal succesfully aborted with: {:?}", msg);
+                        Ok(ActionResult::Bool(false))
+                    }
+                    _ => {
+                        r2r::log_info!(NODE_ID, "Executing the UR Script succeeded? {}", msg.ok);
+                        Ok(ActionResult::Bool(msg.ok))
+                    }
+                },
+                Err(e) => {
+                    r2r::log_error!(NODE_ID, "UR Script Driver Action failed with: {:?}", e,);
+                    return Err(Box::new(e));
+                }
             }
         },
-        Err(e) => {
-            r2r::log_error!(NODE_ID, "UR Script Driver Action failed with: {:?}", e,);
-            return Err(Box::new(e));
+        Either::Right((cancel_request, _nominal)) => {
+            if let Some(cancel_request) = cancel_request {
+                // Always accept cancel requests.
+                cancel_request.accept();
+                match goal_handle.cancel().expect("could not send cancel request").await {
+                    Ok(()) => {
+                        r2r::log_info!(NODE_ID, "Goal succesfully cancelled");
+                        return Ok(ActionResult::Canceled);
+                    }
+                    Err(e) => {
+                        r2r::log_error!(NODE_ID, "Failed to cancel: {}", e);
+                        return Err(Box::new(e));
+                    }
+                }
+            } else {
+                return Err("Got cancel but its dropped".into());
+            }
         }
     }
 }
