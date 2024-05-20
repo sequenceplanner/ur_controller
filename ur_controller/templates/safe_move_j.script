@@ -1,4 +1,4 @@
-def safe_move_j_script():
+def script():
   move_done = False
   force_done = False
   thread move_thread():
@@ -7,6 +7,7 @@ def safe_move_j_script():
     {%- endif %}
     set_tcp({{ tcp_in_faceplate }})
     {% if use_joint_positions -%}
+      socket_send_line("movej without inverse kinematics starting.", "ur_driver_socket")
       movej({{ joint_positions }}, a={{ acceleration }}, v={{ velocity }}
       {%- if use_execution_time -%}
       , t={{ execution_time }}
@@ -14,21 +15,36 @@ def safe_move_j_script():
       {%- if use_blend_radius -%}
       , r={{ blend_radius }}
       {%- endif -%})
-    {%- else -%}
-      movej(get_inverse_kin({{ target_in_base }}), a={{ acceleration }}, v={{ velocity }}
-      {%- if use_execution_time -%}
-      , t={{ execution_time }}
-      {%- endif -%}
-      {%- if use_blend_radius -%}
-      , r={{ blend_radius }}
-      {%- endif -%})
+      return True
+    {% else -%}
+      if get_inverse_kin_has_solution({{ target_in_base }}
+      {%- if use_preferred_joint_config -%}
+      , qnear={{ preferred_joint_config }}
+      {%- endif -%}):
+        socket_send_line("Solution found, start movej.", "ur_driver_socket")
+        movej(get_inverse_kin({{ target_in_base }}
+          {%- if use_preferred_joint_config -%}
+          , qnear={{ preferred_joint_config }}
+          {%- endif -%})
+        , a={{ acceleration }}, v={{ velocity }}
+        {%- if use_execution_time -%}
+        , t={{ execution_time }}
+        {%- endif -%}
+        {%- if use_blend_radius -%}
+        , r={{ blend_radius }}
+        {%- endif -%})
+        return True
+      else:
+        socket_send_line("No inverse kinematics solution found, aborting.", "ur_driver_socket")
+        return False
+      end
     {%- endif %}
     move_done = True
   end
   thread force_thread():
     while True:
     forces = get_tcp_force()
-      if forces[0] > 20.0 or forces[1] > 20.0 or forces[2] > 20.0 or forces[0] < -20.0 or forces[1] < -20.0 or forces[2] < -20.0:
+      if forces[0] > 5.0 or forces[1] > 5.0 or forces[2] > 5.0 or forces[0] < -5.0 or forces[1] < -5.0 or forces[2] < -5.0:
         force_done = True
         break
       end
@@ -47,5 +63,5 @@ def safe_move_j_script():
   kill t2
   stopj(5.0)
   sleep(0.5)
+  return move_done
 end
-safe_move_j_script()

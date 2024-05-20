@@ -8,8 +8,7 @@ use r2r::simple_robot_simulator_msgs::action::SimpleRobotControl;
 use r2r::ur_controller_msgs::action::URControl;
 use r2r::ur_controller_msgs::msg::Payload;
 use r2r::ur_script_msgs::action::ExecuteScript;
-use r2r::ActionServerGoal;
-use r2r::ParameterValue;
+use r2r::{ActionServerGoal, ParameterValue, QosProfile, Node};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tera;
@@ -50,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prefix_param = params_things.get("prefix");
 
     let simple = match simple_param {
-        Some(p) => match p {
+        Some(p) => match &p.value {
             ParameterValue::Bool(value) => *value,
             _ => {
                 r2r::log_warn!(
@@ -70,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let prefix = match prefix_param {
-        Some(p) => match p {
+        Some(p) => match &p.value {
             ParameterValue::String(value) => value.clone(),
             _ => "".to_string()
         }
@@ -83,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         true => {
             let simple_robot_simulator_client =
                 node.create_action_client::<SimpleRobotControl::Action>("simple_robot_control")?;
-            let waiting_for_simple_server = node.is_available(&simple_robot_simulator_client)?;
+            let waiting_for_simple_server = Node::is_available(&simple_robot_simulator_client)?;
 
             let handle = std::thread::spawn(move || loop {
                 node.spin_once(std::time::Duration::from_millis(100));
@@ -111,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let templates_path_param = params_things.get("templates_path");
 
             let templates_path = match templates_path_param {
-                Some(p) => match p {
+                Some(p) => match &p.value {
                     ParameterValue::String(value) => value.clone(),
                     _ => {
                         r2r::log_error!(
@@ -154,15 +153,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let urc_client = node.create_action_client::<ExecuteScript::Action>("ur_script")?;
-            let waiting_urc_server = node.is_available(&urc_client)?;
+            let waiting_urc_server = Node::is_available(&urc_client)?;
 
             let tf_lookup_client =
-                node.create_client::<LookupTransform::Service>("lookup_transform")?;
-            let waiting_for_tf_lookup_server = node.is_available(&tf_lookup_client)?;
+                node.create_client::<LookupTransform::Service>("lookup_transform", QosProfile::default())?;
+            let waiting_for_tf_lookup_server = Node::is_available(&tf_lookup_client)?;
 
             let get_extra_client =
-                node.create_client::<GetExtra::Service>("get_extra")?;
-            let waiting_for_extra_server = node.is_available(&get_extra_client)?;
+                node.create_client::<GetExtra::Service>("get_extra", QosProfile::default())?;
+            let waiting_for_extra_server = Node::is_available(&get_extra_client)?;
 
             let handle = std::thread::spawn(move || loop {
                 node.spin_once(std::time::Duration::from_millis(100));
@@ -480,7 +479,7 @@ async fn interpret_message(
     get_extra_client: &r2r::Client<GetExtra::Service>,
 ) -> Option<Interpretation> {
     let mut pfjs = None;
-    let target_in_base = match message.use_joint_positions && message.command == "move_j" {
+    let target_in_base = match message.use_joint_positions && message.command.contains("move_j") {
         true => pose_to_string(&TransformStamped::default()),
         false => match lookup_tf(BASEFRAME_ID, &message.goal_feature_id, tf_lookup_client).await {
             Some(transform) => {
@@ -520,7 +519,7 @@ async fn interpret_message(
         },
     };
 
-    let tcp_in_faceplate = match message.use_joint_positions && message.command == "move_j" {
+    let tcp_in_faceplate = match message.use_joint_positions && message.command.contains("move_j") {
         true => pose_to_string(&TransformStamped::default()),
         false => match lookup_tf(FACEPLATE_ID, &message.tcp_id, tf_lookup_client).await {
             Some(transform) => pose_to_string(&transform),

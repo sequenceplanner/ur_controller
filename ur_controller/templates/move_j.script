@@ -12,6 +12,7 @@ def script():
     {%- if use_blend_radius -%}
     , r={{ blend_radius }}
     {%- endif -%})
+    return True
   {% else -%}
     if get_inverse_kin_has_solution({{ target_in_base }}
     {%- if use_preferred_joint_config -%}
