@@ -4,8 +4,26 @@ def script():
   {%- endif %}
   set_tcp({{ tcp_in_faceplate }})
   {% if use_joint_positions -%}
-    socket_send_line("movej without inverse kinematics starting.", "ur_driver_socket")
-    movej({{ joint_positions }}, a={{ acceleration }}, v={{ velocity }}
+  socket_send_line("movej without inverse kinematics starting.", "ur_driver_socket")
+  movej({{ joint_positions }}, a={{ acceleration }}, v={{ velocity }}
+  {%- if use_execution_time -%}
+  , t={{ execution_time }}
+  {%- endif -%}
+  {%- if use_blend_radius -%}
+  , r={{ blend_radius }}
+  {%- endif -%})
+  return True
+  {% else -%}
+  if get_inverse_kin_has_solution({{ target_in_base }}
+  {%- if use_preferred_joint_config -%}
+  , qnear={{ preferred_joint_config }}
+  {%- endif -%}):
+    socket_send_line("Solution found, start movej.", "ur_driver_socket")
+    movej(get_inverse_kin({{ target_in_base }}
+      {%- if use_preferred_joint_config -%}
+      , qnear={{ preferred_joint_config }}
+      {%- endif -%})
+    , a={{ acceleration }}, v={{ velocity }}
     {%- if use_execution_time -%}
     , t={{ execution_time }}
     {%- endif -%}
@@ -13,27 +31,9 @@ def script():
     , r={{ blend_radius }}
     {%- endif -%})
     return True
-  {% else -%}
-    if get_inverse_kin_has_solution({{ target_in_base }}
-    {%- if use_preferred_joint_config -%}
-    , qnear={{ preferred_joint_config }}
-    {%- endif -%}):
-      socket_send_line("Solution found, start movej.", "ur_driver_socket")
-      movej(get_inverse_kin({{ target_in_base }}
-        {%- if use_preferred_joint_config -%}
-        , qnear={{ preferred_joint_config }}
-        {%- endif -%})
-      , a={{ acceleration }}, v={{ velocity }}
-      {%- if use_execution_time -%}
-      , t={{ execution_time }}
-      {%- endif -%}
-      {%- if use_blend_radius -%}
-      , r={{ blend_radius }}
-      {%- endif -%})
-      return True
-    else:
-      socket_send_line("No inverse kinematics solution found, aborting.", "ur_driver_socket")
-      return False
-    end
+  else:
+    socket_send_line("No inverse kinematics solution found, aborting.", "ur_driver_socket")
+    return False
+  end
   {%- endif %}
 end
